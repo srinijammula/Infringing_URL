@@ -1,0 +1,166 @@
+---
+title: Infringing URLS
+output: html_document
+---
+```{r include=FALSE}
+options(repos = c(CRAN = "https://cran.r-project.org"))
+install.packages("curl")
+install.packages("dplyr")
+install.packages("jsonlite")
+install.packages("httr")
+install.packages("urltools")
+library(dplyr)
+library(curl)
+library(httr)
+library(jsonlite)
+library(urltools)
+library(ggplot2)
+```
+```{r}
+# extract data from json, keep the file in same folder
+jsondata=fromJSON('response.json')
+
+# create a dataframe to store results
+results <- data.frame(
+  notice_id = integer(),
+  title = character(),
+  type = character(),
+  date_sent = character(),
+  jurisdictions = character(),
+  description = character(),
+  infringing_url = character(),
+  stringsAsFactors = FALSE
+)
+
+# get domain using url
+get_domain <- function(url) {
+  parsed_url <- url_parse(url)
+  domain <- parsed_url$domain
+  if (is.null(domain)) domain <- "NA"
+  return(domain)
+}
+
+#get ip using url
+get_ip <- function(url) {
+  domain <- get_domain(url)
+  ip <- nslookup(domain, error=FALSE)
+  if (is.null(ip)) ip <- "NA"
+  return(ip)
+}
+
+notices <- jsondata$notices
+
+# loop over data to update values in results
+for (i in seq_along(notices$works)) {
+  work <- notices$works[[i]]
+  desc <- work$description
+  infringing_urls <- work$infringing_urls[[1]]$url
+  notice_id <- notices$id[i]
+  title <- notices$title[i]
+  type <- notices$type[i]
+  date_sent <- notices$date_sent[i]
+  jurisdictions <- notices$jurisdictions[[i]][1]
+for (url in infringing_urls) {
+    domain <- get_domain(url)
+    ip_address <- get_ip(url)
+    results <- rbind(results, data.frame(
+      notice_id = notice_id,
+      title = title,
+      type = type,
+      date_sent = date_sent,
+      jurisdictions = jurisdictions,
+      description = desc,
+      infringing_url = url,
+      domain = domain,
+      ip_address = ip_address,
+      stringsAsFactors = FALSE
+    ))
+}
+}
+
+head(results)
+nrow(results)
+
+# store in CSV
+write.csv(results, file = "results.csv", row.names = FALSE)
+
+# print unique number of each column
+for (col in names(results)) {
+  print(paste(col, '-', length(unique(results[[col]]))))
+  print('---------------------------')
+}
+```
+
+# Summary 1 - Domain and IP Analysis
+* Multiple infringing urls are hosted on same domain.
+* Let's list the top 10 domains and ips used to host these infringing urls, with corresponding count of infringing urls. This can be used to take enforcement actions on the domains with more urls with priority.
+```{r}
+domain_counts <- results %>% count(domain) %>% arrange(desc(n))
+ip_counts <- results %>% count(ip_address) %>% arrange(desc(n))
+top_domains <- head(domain_counts, 10)
+top_ips <- head(ip_counts, 10)
+
+# Print top 10 domains
+print("Top Domains Hosting Infringing Content:")
+for (i in 1:nrow(top_domains)) {
+  print(paste("Domain:", top_domains$domain[i], "Count:", top_domains$n[i]))
+}
+
+# Print top 10 IPs
+print("\nTop IPs Hosting Infringing Content:")
+for (i in 1:nrow(top_ips)) {
+  print(paste("IP:", top_ips$ip_address[i], "Count:", top_ips$n[i]))
+}
+```
+
+# Summary 2 - Temporal Analysis
+* Comapring unique and sorted values from fields date_sent and date_received, gives same values, so I decided to analyze on one which is date_sent.
+* Created a line plot using ggplot based on date_sent and notices received.
+```{r}
+results$date_sent <- as.Date(results$date_sent)
+
+# Count occurrences of each date
+daily_sent_counts <- results %>%
+  count(date_sent) %>%
+  arrange(date_sent)
+
+# Create a line plot
+ggplot(daily_sent_counts, aes(x = date_sent, y = n)) +
+  geom_line() +
+  labs(title = 'Number of Notices Sent Per Day',
+       x = 'Date Sent',
+       y = 'Number of Notices Sent')
+```
+
+# Summary 3 - Regional Analysis
+* In the data we saw in total there are only 9 unique jursidictions, so we can see the geographical trends of notices sent.
+* Mapping the country code to name for readability.
+* Plotting a bar graph with jursidications on x-axis and no. of notices on y-axis. We can see that United states and India have issued majority of notices.
+```{r}
+jurisdiction_map <- c(
+  'ES' = 'Spain',
+  'IN' = 'India',
+  'us' = 'United States',
+  'KR' = 'South Korea',
+  'vn' = 'Vietnam',
+  'KZ' = 'Kazakhstan',
+  'RU' = 'Russia',
+  'MY' = 'Malaysia',
+  'ID' = 'Indonesia'
+)
+
+jurisdiction_counts <- results %>%
+  filter(jurisdictions %in% names(jurisdiction_map)) %>%
+  mutate(jurisdictions_mapped = jurisdiction_map[jurisdictions]) %>%
+  count(jurisdictions_mapped) %>%
+  arrange(desc(n))
+
+# Create a bar plot
+ggplot(jurisdiction_counts, aes(x = reorder(jurisdictions_mapped, n), y = n)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), vjust = -0.5) +
+  labs(title = 'Number of Notices by Jurisdiction',
+       x = 'Jurisdiction',
+       y = 'Number of Notices') +
+  theme_minimal()
+```
